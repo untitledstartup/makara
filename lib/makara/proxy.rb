@@ -24,8 +24,11 @@ module Makara
 
         method_names.each do |method_name|
           define_method(method_name) do |*args, &block|
-            appropriate_connection(method_name, args) do |con|
-              con.send(method_name, *args, &block)
+            makara_config = @config.with_indifferent_access[:makara]
+            if makara_config.key?(:retry_exceptions) && (retry_exceptions = makara_config[:retry_exceptions]).present?
+              _execute_with_connection_and_retry_exceptions(retry_exceptions, args, block, method_name)
+            else
+              _execute_with_connection(args, block, method_name)
             end
           end
 
@@ -189,6 +192,39 @@ module Makara
         end
       ensure
         @master_pool.disabled = false
+      end
+    end
+
+    MAX_RETRY_COUNT = 10
+
+    def _execute_with_connection_and_retry_exceptions(retry_exceptions, args, block, method_name)
+      begin
+        should_retry = false
+
+        appropriate_connection(method_name, args) do |con|
+          con.send(method_name, *args, &block)
+        end
+      rescue Exception => actual_exception
+        retry_attempts = retry_exceptions.inject({}) { |memo, retry_exception| memo[retry_exception['name']] = 0; memo }
+        retry_exceptions.each do |retry_exception|
+          if actual_exception.class.to_s == retry_exception['name']
+            sleep retry_exception['time_between_retries_in_seconds'] || 0.1
+            retry_attempt = (retry_attempts[actual_exception.class.to_s] += 1)
+
+            max_attempts = retry_exception['retry_count'] || MAX_RETRY_COUNT
+            if retry_attempt < max_attempts && retry_attempt < MAX_RETRY_COUNT
+              should_retry = true
+            end
+          end
+        end
+        retry if should_retry
+        raise actual_exception
+      end
+    end
+
+    def _execute_with_connection(args, block, method_name)
+      appropriate_connection(method_name, args) do |con|
+        con.send(method_name, *args, &block)
       end
     end
 

@@ -70,10 +70,10 @@ module Makara
       false
     end
 
-    def _makara_connection
+    def _makara_connection(force_new = false)
       current = @connection
 
-      if current
+      if current && !force_new
         current
       else # blacklisted connection or initial error
         new_connection = @proxy.graceful_connection_for(@config)
